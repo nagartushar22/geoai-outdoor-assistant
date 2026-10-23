@@ -139,7 +139,7 @@ Qwen3-1.7B is selected because it is an instruction model below the 3B limit, su
 ## Hackathon handoff checklist
 
 - The public Hugging Face model repository is published at the link above. The model is the upstream Qwen3-1.7B Q8_0 GGUF as-is; there is no fine-tune or adapter.
-- The local source is ready for a public code repository. Exclude `.env`, `.venv`, model weights, logs, and caches when pushing.
+- The public source repository is [nagartushar22/geoai-outdoor-assistant](https://github.com/nagartushar22/geoai-outdoor-assistant). Excluded `.env`, `.venv`, model weights, logs, and caches from the published files.
 - The API URL above is live for a temporary demo while this PC and the tunnel stay up. Use an always-on host to guarantee availability through a later judging window.
 - The five-slide presentation explains the problem, architecture, live worked example, base model, no fine-tuning, and limitations. Disclose Codex as a coding assistant used during development.
 
