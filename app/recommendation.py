@@ -257,14 +257,50 @@ async def make_recommendation(question: str, radius_override: float | None) -> R
         f"at {best.best_time}, about {best.distance_km:g} km from {location}. "
         f"Conditions: {conditions}.{drive} This is a heuristic ranking, not a safety guarantee."
     )
-    if best.us_aqi is not None and best.us_aqi >= 201:
-        aqi_category = "Very Unhealthy" if best.us_aqi <= 300 else "Hazardous"
+    
+    if best.us_aqi is not None and best.us_aqi >= 151:
+        aqi = best.us_aqi
+
+        if aqi <= 200:
+            aqi_category = "Unhealthy"
+            health_warning = (
+                "Air quality is unhealthy. Consider postponing strenuous "
+                "outdoor activity or choosing an indoor alternative."
+            )
+        elif aqi <= 300:
+            aqi_category = "Very Unhealthy"
+            health_warning = (
+                "Air quality is very unhealthy. Avoid outdoor exertion and "
+                "consider an indoor alternative."
+            )
+        else:
+            aqi_category = "Hazardous"
+            health_warning = (
+                "Air quality is hazardous. Avoid outdoor activity and follow "
+                "local official health guidance."
+            )
+
         answer = (
-            f"Caution for {ACTIVITY_LABELS[activity]} near {location}: the forecast US AQI is "
-            f"{best.us_aqi:g} ({aqi_category}) at {best.best_time}. The top mapped match is "
-            f"{best.name}, about {best.distance_km:g} km away, but its score is not a safety "
-            "clearance. Check local official air-quality guidance before planning outdoor activity."
+            f"AIR QUALITY WARNING: Forecast US AQI is {aqi:g} "
+            f"({aqi_category}) for {best.best_time}. {health_warning} "
+            f"The highest-scoring mapped option is {best.name}, "
+            f"about {best.distance_km:g} km from {location}, but its score "
+            "is not a safety clearance. Check local official air-quality "
+            "guidance before making outdoor plans."
         )
+    elif best.us_aqi is not None and best.us_aqi >= 101:
+        answer += (
+            " Air-quality caution: the forecast US AQI is in the "
+            "Unhealthy for Sensitive Groups range. Sensitive people should "
+            "consider reducing prolonged or strenuous outdoor activity."
+        )
+    elif best.us_aqi is None:
+        answer += (
+            " Air-quality data is unavailable for this recommendation; "
+            "do not assume conditions are safe. Check a current local "
+            "air-quality source before going outdoors."
+        )
+
     limitations = [
         "The suitability score is a transparent project heuristic, not an official activity-safety or medical assessment.",
         "OSRM travel duration is a route estimate and does not include live traffic.",
