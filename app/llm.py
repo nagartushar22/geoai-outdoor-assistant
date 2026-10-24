@@ -1,5 +1,6 @@
 
 import json
+import os
 import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -10,14 +11,17 @@ from app import config
 
 
 class ModelUnavailable(RuntimeError):
-    """Raised when the configured language model cannot respond."""
+    """Raised when the language model cannot respond."""
     pass
 
 
 class LocalModel:
     def __init__(self) -> None:
-        self.base_url = config.LLM_BASE_URL.rstrip("/")
-        self.model_name = config.LLM_MODEL
+        self.api_key = os.getenv("GEMINI_API_KEY", "").strip()
+        self.model_name = os.getenv(
+            "LLM_MODEL", "gemini-2.5-flash"
+        ).strip()
+        self.base_url = "https://generativelanguage.googleapis.com/v1beta/models"
 
     async def chat(
         self,
@@ -25,27 +29,38 @@ class LocalModel:
         user: str,
         max_tokens: int = 500,
     ) -> str:
-        """Send a chat completion request to the configured LLM."""
+        """Send a text-generation request to Google Gemini."""
+
+        if not self.api_key:
+            raise ModelUnavailable(
+                "GEMINI_API_KEY is missing from the environment."
+            )
 
         if not self.model_name:
             raise ModelUnavailable("LLM_MODEL is not configured.")
 
-        if not config.HF_TOKEN:
-            raise ModelUnavailable("HF_TOKEN is not configured.")
+        url = (
+            f"{self.base_url}/{self.model_name}:generateContent"
+        )
 
         body = {
-            "model": self.model_name,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
+            "systemInstruction": {
+                "parts": [{"text": system}]
+            },
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": user}],
+                }
             ],
-            "temperature": 0.1,
-            "max_tokens": max_tokens,
-            "stream": False,
+            "generationConfig": {
+                "temperature": 0.1,
+                "maxOutputTokens": max_tokens,
+            },
         }
 
         headers = {
-            "Authorization": f"Bearer {config.HF_TOKEN}",
+            "x-goog-api-key": self.api_key,
             "Content-Type": "application/json",
         }
 
@@ -54,82 +69,95 @@ class LocalModel:
                 timeout=config.LLM_TIMEOUT_SECONDS
             ) as client:
                 response = await client.post(
-                    f"{self.base_url}/chat/completions",
+                    url,
                     json=body,
                     headers=headers,
                 )
-
                 response.raise_for_status()
                 payload = response.json()
 
-            content = payload["choices"][0]["message"]["content"]
-
-            if not isinstance(content, str) or not content.strip():
+            candidates = payload.get("candidates", [])
+            if not candidates:
+                feedback = payload.get("promptFeedback", {})
+                reason = feedback.get("blockReason")
+                if reason:
+                    raise ModelUnavailable(
+                        f"Gemini blocked the request: {reason}."
+                    )
                 raise ModelUnavailable(
-                    "The AI model returned an empty response."
+                    "Gemini returned no response candidates."
                 )
 
-            return content.strip()
+            parts = (
+                candidates[0]
+                .get("content", {})
+                .get("parts", [])
+            )
+            answer = "".join(
+                part.get("text", "")
+                for part in parts
+                if isinstance(part, dict)
+            ).strip()
+
+            if not answer:
+                raise ModelUnavailable(
+                    "Gemini returned an empty response."
+                )
+
+            return answer
 
         except httpx.HTTPStatusError as exc:
-            # Do not expose the token or authorization headers.
             status = exc.response.status_code
 
-            if status == 401 or status == 403:
+            # Never include the request headers or API key in errors.
+            if status == 400:
                 message = (
-                    "Hugging Face authentication or provider permission "
-                    "failed. Check HF_TOKEN and its Inference Providers access."
+                    "Gemini rejected the request. Check the model name "
+                    "and request format."
+                )
+            elif status == 401 or status == 403:
+                message = (
+                    "Gemini authentication or project access failed. "
+                    "Check GEMINI_API_KEY and Google AI Studio eligibility."
+                )
+            elif status == 404:
+                message = (
+                    "The Gemini model was not found. Check LLM_MODEL "
+                    "against the currently available models."
                 )
             elif status == 429:
                 message = (
-                    "Hugging Face rate limit or provider quota reached. "
-                    "Check your account usage and try again later."
-                )
-            elif status == 400:
-                message = (
-                    "Hugging Face rejected the request. Check LLM_MODEL "
-                    "and the request format."
+                    "Gemini rate limit or quota reached. Check your "
+                    "Google AI Studio usage and quota."
                 )
             elif status >= 500:
                 message = (
-                    "The Hugging Face service or selected inference provider "
-                    "is temporarily unavailable."
+                    "The Gemini service is temporarily unavailable."
                 )
             else:
-                message = f"Hugging Face returned HTTP {status}."
+                message = f"Gemini returned HTTP {status}."
 
             raise ModelUnavailable(message) from exc
 
         except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
             raise ModelUnavailable(
-                f"AI request failed: {type(exc).__name__}."
+                f"Gemini request failed: {type(exc).__name__}."
             ) from exc
 
     async def is_ready(self) -> bool:
-        """Check whether the model configuration is present."""
-
-        if "router.huggingface.co" in self.base_url:
-            return bool(
-                config.HF_TOKEN
-                and self.model_name
-                and config.LLM_TIMEOUT_SECONDS > 0
-            )
-
-        health_url = self.base_url.removesuffix("/v1") + "/health"
-
-        try:
-            async with httpx.AsyncClient(timeout=2.0) as client:
-                response = await client.get(health_url)
-            return response.is_success
-        except httpx.HTTPError:
-            return False
+        """Check local configuration without making a paid request."""
+        return bool(
+            self.api_key
+            and self.model_name
+            and config.LLM_TIMEOUT_SECONDS > 0
+        )
 
     async def extract_intent(
         self,
         question: str,
         radius_override: float | None,
     ) -> dict:
-        """Extract activity, location, time, and radius from a request."""
+        """Extract activity, location, time, and radius."""
 
         now = datetime.now(
             ZoneInfo(config.APP_TIMEZONE)
@@ -186,15 +214,8 @@ class LocalModel:
             )
 
         allowed = {
-            "running",
-            "cycling",
-            "golf",
-            "cricket",
-            "football",
-            "tennis",
-            "hiking",
-            "picnic",
-            "outdoor_event",
+            "running", "cycling", "golf", "cricket", "football",
+            "tennis", "hiking", "picnic", "outdoor_event",
             "photography",
         }
 
@@ -204,7 +225,6 @@ class LocalModel:
             if isinstance(activity, str)
             else ""
         )
-
         if intent["activity"] not in allowed:
             intent["activity"] = ""
 
@@ -249,7 +269,7 @@ class LocalModel:
         return intent
 
     async def explain(self, facts: dict) -> str:
-        """Explain recommendations using only the supplied facts."""
+        """Explain recommendations using only supplied facts."""
 
         system = (
             "Explain outdoor recommendations in plain language. "
