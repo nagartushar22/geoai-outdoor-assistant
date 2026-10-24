@@ -10,28 +10,44 @@ from app import config
 
 
 class ModelUnavailable(RuntimeError):
+    """Raised when the configured language model cannot respond."""
     pass
 
 
 class LocalModel:
     def __init__(self) -> None:
-        self.base_url = config.LLM_BASE_URL
+        self.base_url = config.LLM_BASE_URL.rstrip("/")
         self.model_name = config.LLM_MODEL
 
-    async def chat(self, system: str, user: str, max_tokens: int = 500) -> str:
+    async def chat(
+        self,
+        system: str,
+        user: str,
+        max_tokens: int = 500,
+    ) -> str:
+        """Send a chat completion request to the configured LLM."""
+
+        if not self.model_name:
+            raise ModelUnavailable("LLM_MODEL is not configured.")
+
+        if not config.HF_TOKEN:
+            raise ModelUnavailable("HF_TOKEN is not configured.")
+
         body = {
             "model": self.model_name,
             "messages": [
                 {"role": "system", "content": system},
-                {"role": "user", "content": user.rstrip() + "\n/no_think"},
+                {"role": "user", "content": user},
             ],
             "temperature": 0.1,
             "max_tokens": max_tokens,
+            "stream": False,
         }
 
-        headers = {}
-        if config.HF_TOKEN:
-            headers["Authorization"] = f"Bearer {config.HF_TOKEN}"
+        headers = {
+            "Authorization": f"Bearer {config.HF_TOKEN}",
+            "Content-Type": "application/json",
+        }
 
         try:
             async with httpx.AsyncClient(
@@ -42,28 +58,65 @@ class LocalModel:
                     json=body,
                     headers=headers,
                 )
+
                 response.raise_for_status()
                 payload = response.json()
-                return payload["choices"][0]["message"]["content"]
 
-        except (
-            httpx.HTTPError,
-            KeyError,
-            IndexError,
-            TypeError,
-            ValueError,
-        ) as exc:
+            content = payload["choices"][0]["message"]["content"]
+
+            if not isinstance(content, str) or not content.strip():
+                raise ModelUnavailable(
+                    "The AI model returned an empty response."
+                )
+
+            return content.strip()
+
+        except httpx.HTTPStatusError as exc:
+            # Do not expose the token or authorization headers.
+            status = exc.response.status_code
+
+            if status == 401 or status == 403:
+                message = (
+                    "Hugging Face authentication or provider permission "
+                    "failed. Check HF_TOKEN and its Inference Providers access."
+                )
+            elif status == 429:
+                message = (
+                    "Hugging Face rate limit or provider quota reached. "
+                    "Check your account usage and try again later."
+                )
+            elif status == 400:
+                message = (
+                    "Hugging Face rejected the request. Check LLM_MODEL "
+                    "and the request format."
+                )
+            elif status >= 500:
+                message = (
+                    "The Hugging Face service or selected inference provider "
+                    "is temporarily unavailable."
+                )
+            else:
+                message = f"Hugging Face returned HTTP {status}."
+
+            raise ModelUnavailable(message) from exc
+
+        except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
             raise ModelUnavailable(
-                "The AI model is unavailable. Check the Hugging Face "
-                "token, model availability, and provider access."
+                f"AI request failed: {type(exc).__name__}."
             ) from exc
 
     async def is_ready(self) -> bool:
-        # Hosted inference does not use the local llama.cpp health endpoint.
+        """Check whether the model configuration is present."""
+
         if "router.huggingface.co" in self.base_url:
-            return bool(config.HF_TOKEN and self.model_name)
+            return bool(
+                config.HF_TOKEN
+                and self.model_name
+                and config.LLM_TIMEOUT_SECONDS > 0
+            )
 
         health_url = self.base_url.removesuffix("/v1") + "/health"
+
         try:
             async with httpx.AsyncClient(timeout=2.0) as client:
                 response = await client.get(health_url)
@@ -72,8 +125,12 @@ class LocalModel:
             return False
 
     async def extract_intent(
-        self, question: str, radius_override: float | None
+        self,
+        question: str,
+        radius_override: float | None,
     ) -> dict:
+        """Extract activity, location, time, and radius from a request."""
+
         now = datetime.now(
             ZoneInfo(config.APP_TIMEZONE)
         ).isoformat(timespec="minutes")
@@ -85,18 +142,21 @@ class LocalModel:
         )
 
         system = (
-            "Extract fields from an outdoor-activity request. Return exactly "
-            "one JSON object, no markdown. Do not invent a location or a time. "
-            "Allowed activity values: running, cycling, golf, cricket, football, "
-            "tennis, hiking, picnic, outdoor_event, photography. Use null for "
-            "missing location or time. Convert relative dates using the supplied "
-            f"current local time ({config.APP_TIMEZONE}). Return times in ISO "
-            "local format YYYY-MM-DDTHH:MM, with start_local and end_local. "
-            "For vague periods such as tomorrow morning or this weekend, choose "
-            "a sensible local interval. If no time period is stated, return null "
-            "for both times. Keep personal_notes short and only include details "
-            f"the user stated. {radius_rule} Schema: "
-            '{"activity": string, "location": string|null, '
+            "Extract fields from an outdoor-activity request. "
+            "Return exactly one JSON object without Markdown. "
+            "Do not invent a location or time. "
+            "Allowed activity values: running, cycling, golf, cricket, "
+            "football, tennis, hiking, picnic, outdoor_event, photography. "
+            "Use null for missing location or time. "
+            f"The current local time is {now} in timezone "
+            f"{config.APP_TIMEZONE}. Convert relative dates using this time. "
+            "Return times in local ISO format YYYY-MM-DDTHH:MM, using "
+            "start_local and end_local. For vague periods such as tomorrow "
+            "morning or this weekend, choose a sensible local interval. "
+            "If no time period is stated, use null for both times. "
+            "Keep personal_notes short and include only details the user "
+            f"stated. {radius_rule} "
+            'Schema: {"activity": string, "location": string|null, '
             '"radius_km": number, "start_local": string|null, '
             '"end_local": string|null, "personal_notes": [string]}'
         )
@@ -126,8 +186,16 @@ class LocalModel:
             )
 
         allowed = {
-            "running", "cycling", "golf", "cricket", "football", "tennis",
-            "hiking", "picnic", "outdoor_event", "photography",
+            "running",
+            "cycling",
+            "golf",
+            "cricket",
+            "football",
+            "tennis",
+            "hiking",
+            "picnic",
+            "outdoor_event",
+            "photography",
         }
 
         activity = intent.get("activity")
@@ -136,6 +204,7 @@ class LocalModel:
             if isinstance(activity, str)
             else ""
         )
+
         if intent["activity"] not in allowed:
             intent["activity"] = ""
 
@@ -180,12 +249,14 @@ class LocalModel:
         return intent
 
     async def explain(self, facts: dict) -> str:
+        """Explain recommendations using only the supplied facts."""
+
         system = (
-            "You explain outdoor recommendations in plain language. Use only "
-            "the supplied facts. Do not add weather, venue, safety, traffic, "
-            "or medical claims that are absent from the facts. Make clear that "
-            "the ranking is guidance, not a guarantee of safety. Keep the "
-            "answer concise."
+            "Explain outdoor recommendations in plain language. "
+            "Use only the supplied facts. Do not add weather, venue, safety, "
+            "traffic, or medical claims that are absent from the facts. "
+            "Make clear that the ranking is guidance, not a guarantee of "
+            "safety. Keep the answer concise."
         )
 
         user = (
