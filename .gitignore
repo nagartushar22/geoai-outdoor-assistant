@@ -1,10 +1,9 @@
-.env
-__pycache__/
-*.py[cod]
 .venv/
-.pytest_cache/
-model-cache/
-*.gguf
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+
 .tmp/
-*.log
 

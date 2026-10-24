@@ -257,8 +257,13 @@ async def make_recommendation(question: str, radius_override: float | None) -> R
         f"at {best.best_time}, about {best.distance_km:g} km from {location}. "
         f"Conditions: {conditions}.{drive} This is a heuristic ranking, not a safety guarantee."
     )
-    if best.us_aqi is not None and best.us_aqi >= 201:
-        aqi_category = "Very Unhealthy" if best.us_aqi <= 300 else "Hazardous"
+    if best.us_aqi is not None and best.us_aqi >= 151:
+        if best.us_aqi <= 200:
+            aqi_category = "Unhealthy"
+        elif best.us_aqi <= 300:
+            aqi_category = "Very Unhealthy"
+        else:
+            aqi_category = "Hazardous"
         answer = (
             f"Caution for {ACTIVITY_LABELS[activity]} near {location}: the forecast US AQI is "
             f"{best.us_aqi:g} ({aqi_category}) at {best.best_time}. The top mapped match is "
@@ -292,7 +297,7 @@ async def make_recommendation(question: str, radius_override: float | None) -> R
             ),
             "Open-Meteo Forecast API",
             "Open-Meteo Air Quality API",
-            *(["US EPA AQI categories"] if best.us_aqi is not None and best.us_aqi >= 201 else []),
+            *(["US EPA AQI categories"] if best.us_aqi is not None and best.us_aqi >= 151 else []),
             "OSRM (estimated route duration)",
         ],
         data_updated_at=datetime.now(ZoneInfo(config.APP_TIMEZONE)).isoformat(timespec="seconds"),
