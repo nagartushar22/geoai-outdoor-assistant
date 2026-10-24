@@ -169,9 +169,9 @@ async def make_recommendation(question: str, radius_override: float | None) -> R
             answer=f"I did not find a mapped place suitable for {ACTIVITY_LABELS[activity]} within {radius:g} km of {location}. Try a larger radius or a more specific neighborhood.",
             activity=activity,
             sources=(
-                ["Â© OpenStreetMap contributors", "Nominatim bounded place search"]
+                ["-¬ OpenStreetMap contributors", "Nominatim bounded place search"]
                 if place_search_fallback
-                else ["Â© OpenStreetMap contributors", "Nominatim", "Overpass API"]
+                else ["-¬ OpenStreetMap contributors", "Nominatim", "Overpass API"]
             ),
         )
 
@@ -244,7 +244,7 @@ async def make_recommendation(question: str, radius_override: float | None) -> R
     )
     weather_bits = []
     if best.temperature_c is not None:
-        weather_bits.append(f"feels-like {best.temperature_c:g} Â°C")
+        weather_bits.append(f"feels-like {best.temperature_c:g} -¦C")
     if best.rain_probability_percent is not None:
         weather_bits.append(f"rain chance {best.rain_probability_percent:g}%")
     if best.wind_kmh is not None:
@@ -288,7 +288,7 @@ async def make_recommendation(question: str, radius_override: float | None) -> R
         activity=activity,
         candidates=output,
         sources=[
-            "Â© OpenStreetMap contributors",
+            "-¬ OpenStreetMap contributors",
             "Nominatim (location search)",
             *(
                 ["Nominatim (bounded place search fallback)"]
